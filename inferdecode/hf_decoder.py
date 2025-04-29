@@ -16,6 +16,9 @@ class HFDecoder(BaseDecoder):
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+    @property
+    def model_name(self) -> str:
+        return self.model.name_or_path
     async def generate_full_trace(self, prompt, max_steps, temperature, top_p, top_k, decoding_strategy):
         trace = []
 
