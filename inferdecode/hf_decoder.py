@@ -1,4 +1,4 @@
-# hf_decoder.py
+# hf_decoder.py (updated implementation)
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from inferdecode.base_decoder import BaseDecoder
@@ -19,17 +19,23 @@ class HFDecoder(BaseDecoder):
     @property
     def model_name(self) -> str:
         return self.model.name_or_path
+
     async def generate_full_trace(self, prompt, max_steps, temperature, top_p, top_k, decoding_strategy):
         trace = []
-
         input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
         generated = input_ids.clone()
+
+        # Validate parameters
+        top_p = max(0.0, min(1.0, top_p))
+        top_k = max(1, top_k)
+        temperature = max(0.0, temperature)
 
         for _ in range(max_steps):
             with torch.no_grad():
                 outputs = self.model(input_ids=generated)
                 logits = outputs.logits[:, -1, :]
 
+            # Apply temperature
             if temperature > 0:
                 logits = logits / temperature
             probs = torch.softmax(logits, dim=-1)
@@ -39,19 +45,28 @@ class HFDecoder(BaseDecoder):
                 top_probs, top_indices = torch.topk(probs, 10, dim=-1)
 
             elif decoding_strategy == "top_k":
-                top_probs, top_indices = torch.topk(probs, top_k, dim=-1)
+                # Ensure top_k doesn't exceed vocabulary size
+                vocab_size = probs.size(-1)
+                actual_top_k = min(top_k, vocab_size)
+                
+                top_probs, top_indices = torch.topk(probs, actual_top_k, dim=-1)
                 probs_top_k = top_probs / top_probs.sum(dim=-1, keepdim=True)
                 sampled = torch.multinomial(probs_top_k, num_samples=1)
                 next_token = torch.gather(top_indices, 1, sampled).squeeze(1)
-                top_probs = probs_top_k
+                # Get top 10 for display
+                top_probs, top_indices = torch.topk(probs, 10, dim=-1)
 
             elif decoding_strategy == "top_p":
                 sorted_probs, sorted_indices = torch.sort(probs, descending=True)
                 cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                
+                # Find the first index where cumulative probability exceeds top_p
                 sorted_mask = cumulative_probs <= top_p
-                sorted_mask[..., 0] = True  # Ensure at least one token
+                # Ensure at least one token is selected
+                sorted_mask[..., 0] = True  
 
-                filtered_probs = sorted_probs * sorted_mask
+                # Remove tokens that don't meet the criteria
+                filtered_probs = torch.where(sorted_mask, sorted_probs, torch.zeros_like(sorted_probs))
                 filtered_probs /= filtered_probs.sum(dim=-1, keepdim=True)
 
                 sampled = torch.multinomial(filtered_probs, num_samples=1)
@@ -64,20 +79,31 @@ class HFDecoder(BaseDecoder):
                 top_probs, top_indices = torch.topk(probs, 10, dim=-1)
 
             elif decoding_strategy == "beam_search":
-                next_token = torch.topk(probs, 2, dim=-1)[1][:, 0]
+                # Note: This is a simplified version - true beam search requires maintaining multiple sequences
+                # For research purposes, we'll show the top 2 candidates at each step
+                top_probs, top_indices = torch.topk(probs, 2, dim=-1)
+                next_token = top_indices[:, 0]  # Take the most probable token
+                # Get top 10 for display
                 top_probs, top_indices = torch.topk(probs, 10, dim=-1)
 
             elif decoding_strategy == "typical":
-                entropy = -(probs * probs.log()).sum(dim=-1, keepdim=True)
-                surprise = (-probs.log())
+                # Calculate entropy
+                entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1, keepdim=True)
+                # Calculate surprise (negative log probability)
+                surprise = -torch.log(probs + 1e-10)
+                # Calculate typicality
                 typical = (surprise - entropy).abs()
+                
+                # Sort by typicality
                 sorted_typical, sorted_indices = torch.sort(typical, dim=-1)
                 sorted_probs = torch.gather(probs, -1, sorted_indices)
+                
+                # Apply top-p filtering
                 cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
                 sorted_mask = cumulative_probs <= top_p
-                sorted_mask[..., 0] = True
+                sorted_mask[..., 0] = True  # Ensure at least one token
 
-                filtered_probs = sorted_probs * sorted_mask
+                filtered_probs = torch.where(sorted_mask, sorted_probs, torch.zeros_like(sorted_probs))
                 filtered_probs /= filtered_probs.sum(dim=-1, keepdim=True)
 
                 sampled = torch.multinomial(filtered_probs, num_samples=1)
@@ -106,4 +132,3 @@ class HFDecoder(BaseDecoder):
                 break
 
         return trace
-
