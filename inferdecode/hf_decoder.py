@@ -30,6 +30,25 @@ class HFDecoder(BaseDecoder):
         top_k = max(1, top_k)
         temperature = max(0.0, temperature)
 
+        if input_ids is not None and input_ids.size(1) == 0:
+            # Return an appropriate empty result instead of passing to the model
+            batch_size = input_ids.size(0)
+            device = input_ids.device
+
+            # Create an empty tensor with the right shape for output
+            empty_result = torch.zeros(
+                (batch_size, 0, self.model.config.hidden_size),
+                device=device
+            )
+
+            # Return empty outputs in the appropriate format
+            return {
+                "step": 0,
+                "top_tokens": empty_result,
+                "chosen_token": "",
+                "current_text": ""
+            }
+
         for _ in range(max_steps):
             with torch.no_grad():
                 outputs = self.model(input_ids=generated)
