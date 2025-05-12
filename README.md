@@ -1,7 +1,7 @@
 # InferDecode
 
 Interactive visualization tool for LLM decoding strategies.
-![](public/inferdecode.mp4)
+![](public/inferdecode.gif)
 ## Features
 
 - Visualize different decoding strategies (greedy, top-k, top-p, etc.)
